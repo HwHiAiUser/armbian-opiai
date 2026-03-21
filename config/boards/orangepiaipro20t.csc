@@ -1,0 +1,10 @@
+# Huawei Ascend 310B / Orange Pi AI Pro 20T, 20TOPS NPU, eMMC, PCIe, USB3
+declare -g BOARD_NAME="Orange Pi AI Pro 20T"
+declare -g BOARD_VENDOR="xunlong"
+declare -g BOARD_MAINTAINER="yoolc"
+declare -g BOARDFAMILY="ascend310b"
+declare -g KERNEL_TARGET="current,legacy"
+declare -g KERNEL_TEST_TARGET="current"
+declare -g BOOTCONFIG="none"
+declare -g IMAGE_PARTITION_TABLE="gpt"
+declare -g BOOT_FDT_FILE="hi1910b/hi1910B-orangepiaipro20t.dtb"
