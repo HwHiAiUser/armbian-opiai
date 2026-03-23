@@ -728,6 +728,31 @@ function post_create_partitions__500_opiai_layout() {
 	rootpart=2
 }
 
+function opiai__ensure_loop_partition_node() {
+	local dev="${1}"
+	local devname majmin maj min
+
+	[[ -b "${dev}" ]] && return 0
+
+	devname="$(basename "${dev}")"
+	majmin="$(cat "/sys/class/block/${devname}/dev" 2>/dev/null)" || {
+		display_alert "opiai: ${devname} not found in sysfs" "${dev}" "wrn"
+		return 1
+	}
+
+	maj="${majmin%%:*}"
+	min="${majmin##*:}"
+	display_alert "opiai: creating missing device node" "${dev} (${maj}:${min})" "info"
+	run_host_command_logged mknod -m0660 "${dev}" b "${maj}" "${min}"
+}
+
+function prepare_root_device__500_opiai_create_loop_nodes() {
+	# Inside Docker, udevd is absent so partition device nodes may not appear in /dev
+	# after partprobe. Create them directly from sysfs.
+	opiai__ensure_loop_partition_node "${LOOP}p1"
+	opiai__ensure_loop_partition_node "${LOOP}p2"
+}
+
 function format_partitions__500_opiai_layout() {
 	# The vendor layout reserves only 1 MiB here, so use the smallest viable ext4 geometry.
 	check_loop_device "${LOOP}p1"
