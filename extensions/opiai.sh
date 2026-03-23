@@ -675,7 +675,7 @@ function pre_prepare_partitions__500_opiai_layout() {
 }
 
 function prepare_image_size__500_opiai_layout() {
-	local fixed_layout_mib=324
+	local fixed_layout_mib=274
 	local rootfs_target_mib
 	local growth_mib
 	local growth_percent
@@ -699,11 +699,9 @@ function create_partition_table__500_opiai_layout() {
 	local disk_reserved_sectors=2048
 	local emmc_reserved_sectors=557056
 	local reserved_fs_sectors=2048
-	local exchange_fs_sectors=102400
 	local gpt_tail_reserved_sectors=33
 	local reserved_start
 	local root_start
-	local exchange_start
 	local root_size
 	local image_sectors
 	local partition_script
@@ -711,16 +709,14 @@ function create_partition_table__500_opiai_layout() {
 	reserved_start=$((disk_reserved_sectors + emmc_reserved_sectors))
 	root_start=$((reserved_start + reserved_fs_sectors))
 	image_sectors=$(( $(stat -c%s "${SDCARD}.raw") / SECTOR_SIZE ))
-	exchange_start=$((image_sectors - exchange_fs_sectors - gpt_tail_reserved_sectors))
-	root_size=$((exchange_start - root_start))
+	root_size=$((image_sectors - gpt_tail_reserved_sectors - root_start))
 
-	[[ "${root_size}" -gt 0 ]] || exit_with_error "Calculated invalid root partition size" "image_sectors=${image_sectors}, root_start=${root_start}, exchange_start=${exchange_start}"
+	[[ "${root_size}" -gt 0 ]] || exit_with_error "Calculated invalid root partition size" "image_sectors=${image_sectors}, root_start=${root_start}"
 
 	partition_script=$(cat <<- EOF
 		label: gpt
 		1 : name="reserved_fs", start=${reserved_start}, size=${reserved_fs_sectors}, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 		2 : name="root_fs", start=${root_start}, size=${root_size}, type=${PARTITION_TYPE_UUID_ROOT}
-		3 : name="exchange_fs", start=${exchange_start}, size=${exchange_fs_sectors}, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
 	EOF
 	)
 
@@ -733,17 +729,9 @@ function post_create_partitions__500_opiai_layout() {
 }
 
 function format_partitions__500_opiai_layout() {
-	local exchange_uuid
-
 	# The vendor layout reserves only 1 MiB here, so use the smallest viable ext4 geometry.
 	check_loop_device "${LOOP}p1"
-	check_loop_device "${LOOP}p3"
 	run_host_command_logged mkfs.ext4 -q -F -b 1024 -m 0 -O ^has_journal -L reserved_fs "${LOOP}p1"
-	run_host_command_logged mkfs.fat -F32 -n exchange_fs "${LOOP}p3"
-
-	exchange_uuid="$(blkid -s UUID -o value "${LOOP}p3")"
-	run_host_command_logged mkdir -p "${SDCARD}/exchange"
-	echo "UUID=${exchange_uuid} /exchange vfat defaults 0 0" >> "${SDCARD}/etc/fstab"
 }
 
 function pre_update_initramfs__500_opiai_generate_initrd() {
