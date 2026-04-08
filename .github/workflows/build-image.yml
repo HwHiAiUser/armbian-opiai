@@ -1,0 +1,111 @@
+name: "Build Orange Pi AI Pro 20T images"
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_version:
+        description: "Kernel release tag (e.g. 6.18.21, or latest)"
+        required: false
+        default: "latest"
+      release:
+        description: "Distro release"
+        required: false
+        default: "trixie"
+        type: choice
+        options:
+          - trixie
+          - noble
+          - bookworm
+      variants:
+        description: "Image variants to build"
+        required: false
+        default: "minimal,default"
+        type: choice
+        options:
+          - minimal
+          - default
+          - "minimal,default"
+
+jobs:
+  matrix:
+    name: Prepare build matrix
+    runs-on: ubuntu-24.04
+    outputs:
+      include: ${{ steps.gen.outputs.include }}
+    steps:
+      - id: gen
+        run: |
+          variants="${{ inputs.variants }}"
+          release="${{ inputs.release }}"
+          json="["
+          first=true
+          for v in ${variants//,/ }; do
+            if [ "$first" = true ]; then first=false; else json+=","; fi
+            if [ "$v" = "minimal" ]; then
+              json+="{\"variant\":\"minimal\",\"build_minimal\":\"yes\",\"install_headers\":\"no\",\"release\":\"${release}\"}"
+            else
+              json+="{\"variant\":\"default\",\"build_minimal\":\"no\",\"install_headers\":\"yes\",\"release\":\"${release}\"}"
+            fi
+          done
+          json+="]"
+          echo "include=${json}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    name: "Build ${{ matrix.variant }} (${{ matrix.release }})"
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.include) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            acl aptly bc binfmt-support bison btrfs-progs build-essential \
+            ca-certificates ccache cpio cryptsetup curl debian-archive-keyring \
+            debian-keyring debootstrap device-tree-compiler dialog dirmngr \
+            dosfstools dwarves f2fs-tools fakeroot flex gawk gdisk gnupg gpg \
+            imagemagick jq kmod libbison-dev libc6-dev libelf-dev libfdt-dev \
+            libfile-fcntllock-perl libfl-dev liblz4-tool libncurses-dev \
+            libpython2-dev libssl-dev libusb-1.0-0-dev linux-base lzop mtd-utils \
+            ntpdate p7zip-full parted patchutils pigz pixz pkg-config pv \
+            python3-dev python3-distutils qemu-user-static rsync swig \
+            systemd-container u-boot-tools udev unzip uuid-dev wget whiptail \
+            xz-utils zlib1g-dev zstd \
+            libc6-arm64-cross qemu-user-static
+
+      - name: Build image
+        env:
+          OPIAI_KERNEL_VERSION: ${{ inputs.kernel_version }}
+        run: |
+          ./compile.sh build \
+            BOARD=orangepiaipro20t \
+            BRANCH=current \
+            RELEASE=${{ matrix.release }} \
+            BUILD_MINIMAL=${{ matrix.build_minimal }} \
+            INSTALL_HEADERS=${{ matrix.install_headers }} \
+            COMPRESS_OUTPUTIMAGE=xz \
+            EXPERT=yes
+
+      - name: Collect output
+        id: output
+        run: |
+          mkdir -p release-images
+          cp output/images/*.img.xz release-images/ 2>/dev/null || true
+          cp output/images/*.img.xz.sha release-images/ 2>/dev/null || true
+          ls -lh release-images/
+          echo "dir=release-images" >> "$GITHUB_OUTPUT"
+
+      - name: Upload image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangepiaipro20t-${{ matrix.variant }}-${{ matrix.release }}
+          path: ${{ steps.output.outputs.dir }}/
+          retention-days: 14

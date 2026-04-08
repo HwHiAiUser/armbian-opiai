@@ -1,65 +1,29 @@
 function add_host_dependencies__opiai_host_deps() {
-	local gcc_major
-	local cross_packages="binutils-aarch64-linux-gnu gcc-aarch64-linux-gnu g++-aarch64-linux-gnu"
-
-	gcc_major="$(opiai__vendor_gcc_major)"
-	if [[ -n "${gcc_major}" ]]; then
-		cross_packages="binutils-aarch64-linux-gnu gcc-${gcc_major}-aarch64-linux-gnu g++-${gcc_major}-aarch64-linux-gnu"
-	fi
-
-	declare -g EXTRA_BUILD_DEPS="${EXTRA_BUILD_DEPS} ${cross_packages} bc bison flex libssl-dev libelf-dev fakeroot cmake dosfstools device-tree-compiler python3-pycryptodome kmod qemu-user-static"
+	declare -g EXTRA_BUILD_DEPS="${EXTRA_BUILD_DEPS} fakeroot dosfstools device-tree-compiler kmod qemu-user-static wget curl jq"
 }
 
 function opiai__cache_root() {
 	echo "${SRC}/cache/sources/opiai"
 }
 
-function opiai__vendor_sdk_source() {
-	echo "${OPIAI_SDK_SOURCE:-https://github.com/HwHiAiUser/kernel-build-opiai.git}"
+function opiai__releases_api_url() {
+	echo "${OPIAI_RELEASES_API:-https://api.github.com/repos/HwHiAiUser/kernel-build-opiai/releases}"
 }
 
-function opiai__vendor_gcc_major() {
-	local gcc_major="${OPIAI_GCC_MAJOR:-14}"
-
-	case "${gcc_major}" in
-		"" | default | system)
-			echo ""
-			;;
-		[0-9]*)
-			echo "${gcc_major}"
-			;;
-		*)
-			exit_with_error "Unsupported Orange Pi AI Pro 20T GCC selection" "${gcc_major}; use empty/default/system or a numeric GCC major version"
-			;;
-	esac
+function opiai__releases_download_url() {
+	echo "${OPIAI_RELEASES_DOWNLOAD:-https://github.com/HwHiAiUser/kernel-build-opiai/releases/download}"
 }
 
-function opiai__vendor_toolchain_label() {
-	local gcc_major
-
-	gcc_major="$(opiai__vendor_gcc_major)"
-	if [[ -n "${gcc_major}" ]]; then
-		echo "gcc${gcc_major}"
-		return 0
-	fi
-
-	echo "gcc-default"
-}
-
-function opiai__host_image_builder_root() {
-	echo "${OPIAI_IMAGE_BUILDER_ROOT:-${SRC}/../image-builder}"
+function opiai__kernel_version() {
+	echo "${OPIAI_KERNEL_VERSION:-latest}"
 }
 
 function opiai__assets_dir() {
 	echo "${OPIAI_ASSETS_DIR_OVERRIDE:-$(opiai__cache_root)/assets}"
 }
 
-function opiai__host_emmc_head_source() {
-	echo "${OPIAI_EMMC_HEAD:-$(opiai__host_image_builder_root)/src/compress/download/emmc-head}"
-}
-
-function opiai__host_itrustee_source() {
-	echo "${OPIAI_ITRUSTEE_IMAGE:-$(opiai__host_image_builder_root)/src/compress/download/firmware/itrustee.img}"
+function opiai__firmware_download_url() {
+	echo "${OPIAI_FIRMWARE_DOWNLOAD_URL:-https://github.com/HwHiAiUser/kernel-build-opiai/releases/download/assets}"
 }
 
 function opiai__emmc_head_binary() {
@@ -137,14 +101,11 @@ function opiai__require_directory() {
 
 function opiai__stage_vendor_assets() {
 	local assets_dir
-	local emmc_src
-	local itrustee_src
 	local emmc_dst
 	local itrustee_dst
+	local base_url
 
 	assets_dir="$(opiai__assets_dir)"
-	emmc_src="$(opiai__host_emmc_head_source)"
-	itrustee_src="$(opiai__host_itrustee_source)"
 	emmc_dst="$(opiai__emmc_head_binary)"
 	itrustee_dst="$(opiai__itrustee_image)"
 
@@ -152,256 +113,177 @@ function opiai__stage_vendor_assets() {
 		return 0
 	fi
 
-	opiai__require_executable "${emmc_src}"
-	opiai__require_file "${itrustee_src}"
-
+	base_url="$(opiai__firmware_download_url)"
 	run_host_command_logged mkdir -p "${assets_dir}"
-	run_host_command_logged install -m 0755 "${emmc_src}" "${emmc_dst}"
-	run_host_command_logged install -m 0644 "${itrustee_src}" "${itrustee_dst}"
+
+	opiai__download_artifact "${base_url}/emmc-head" "${emmc_dst}"
+	run_host_command_logged chmod 0755 "${emmc_dst}"
+	opiai__download_artifact "${base_url}/itrustee.img" "${itrustee_dst}"
 }
 
 function host_pre_docker_launch__500_opiai_stage_assets() {
 	opiai__stage_vendor_assets
-}
 
-function opiai__vendor_source_dir() {
-	if [[ -n "${OPIAI_SDK_ROOT:-}" ]]; then
-		echo "$(realpath -m "${OPIAI_SDK_ROOT}")"
-		return 0
-	fi
+	# When OPIAI_LOCAL_OUTPUT_DIR is set, stage local artifacts into the
+	# cache directory that gets bind-mounted into the Docker container.
+	# Use cp (not symlinks) because container bind-mounts cannot follow
+	# host-absolute symlinks whose targets are outside the mount tree.
+	if [[ -n "${OPIAI_LOCAL_OUTPUT_DIR:-}" ]]; then
+		local src_dir
+		local stage_dir
+		src_dir="$(realpath -m "${OPIAI_LOCAL_OUTPUT_DIR}")"
+		stage_dir="$(opiai__cache_root)/releases/local"
 
-	echo "${OPIAI_VENDOR_SOURCE_DIR_OVERRIDE:-$(opiai__cache_root)/kernel-build-opiai/$(branch2dir "$(opiai__branch_to_vendor_ref)")}"
-}
+		display_alert "Staging local kernel artifacts for Docker" "${src_dir} -> ${stage_dir}" "info"
+		run_host_command_logged rm -rf "${stage_dir}"
+		run_host_command_logged mkdir -p "${stage_dir}"
 
-function opiai__vendor_board_dts_file() {
-	echo "$(opiai__vendor_source_dir)/dtb/dts/hi1910b/hi1910BL/hi1910B-orangepiaipro20t.dts"
-}
+		local f
+		for f in Image dt.img; do
+			[[ -f "${src_dir}/${f}" ]] || exit_with_error "Missing local artifact" "${src_dir}/${f}"
+			run_host_command_logged cp -f "${src_dir}/${f}" "${stage_dir}/${f}"
+		done
 
-function opiai__vendor_kernel_defconfig_file() {
-	echo "$(opiai__vendor_source_dir)/linux-source/arch/arm64/configs/ascend310B_defconfig"
-}
-
-function opiai__update_vendor_submodules() {
-	local sdk_root="${1}"
-
-	opiai__require_directory "${sdk_root}"
-	opiai__require_directory "${sdk_root}/.git"
-	opiai__require_file "${sdk_root}/.gitmodules"
-
-	run_host_command_logged git -C "${sdk_root}" submodule sync --recursive
-	run_host_command_logged git -C "${sdk_root}" submodule update --init --recursive --jobs "$(opiai__vendor_jobs_count)"
-}
-
-function opiai__reset_cached_vendor_source_tree() {
-	local sdk_root="${1}"
-	local kernel_root="${sdk_root}/linux-source"
-
-	opiai__require_directory "${sdk_root}"
-	opiai__require_directory "${sdk_root}/.git"
-	opiai__require_directory "${kernel_root}"
-	opiai__require_directory "${kernel_root}/.git"
-
-	display_alert "Resetting Orange Pi AI Pro 20T cached vendor tree" "${sdk_root}" "info"
-	run_host_command_logged git -C "${sdk_root}" reset --hard HEAD
-	run_host_command_logged git -C "${sdk_root}" clean -xfd
-	run_host_command_logged git -C "${kernel_root}" reset --hard HEAD
-	run_host_command_logged git -C "${kernel_root}" clean -xfd
-}
-
-function opiai__prepare_vendor_source_tree() {
-	local sdk_root
-	local vendor_ref
-
-	sdk_root="$(opiai__vendor_source_dir)"
-	vendor_ref="$(opiai__branch_to_vendor_ref)"
-
-	if [[ -n "${OPIAI_SDK_ROOT:-}" ]]; then
-		opiai__require_directory "${sdk_root}"
-		opiai__require_directory "${sdk_root}/.git"
-		opiai__update_vendor_submodules "${sdk_root}"
-		opiai__require_directory "${sdk_root}/linux-source"
-		declare -g OPIAI_PREPARED_VENDOR_SOURCE_DIR="${sdk_root}"
-		return 0
-	fi
-
-	fetch_from_repo "$(opiai__vendor_sdk_source)" "opiai/kernel-build-opiai" "${vendor_ref}" "yes"
-
-	opiai__require_directory "${sdk_root}"
-	opiai__require_directory "${sdk_root}/.git"
-	opiai__update_vendor_submodules "${sdk_root}"
-	opiai__reset_cached_vendor_source_tree "${sdk_root}"
-	opiai__require_directory "${sdk_root}/linux-source"
-	declare -g OPIAI_PREPARED_VENDOR_SOURCE_DIR="${sdk_root}"
-}
-
-function opiai__patch_vendor_source_tree() {
-	local dts_file
-	local dts_file_quoted
-
-	dts_file="$(opiai__vendor_board_dts_file)"
-	opiai__require_file "${dts_file}"
-	printf -v dts_file_quoted '%q' "${dts_file}"
-
-	run_host_command_logged "
-		dts_file=${dts_file_quoted}
-		if grep -q 'systemd\\.unified_cgroup_hierarchy=0' \"\${dts_file}\"; then
-			sed -i 's/ systemd\\.unified_cgroup_hierarchy=0//g' \"\${dts_file}\"
+		# DTB might be in a sibling workspace directory
+		if [[ ! -f "${stage_dir}/hi1910B-orangepiaipro20t.dtb" ]]; then
+			local dtb_found=""
+			local dtb_candidate
+			for dtb_candidate in \
+				"${src_dir}/hi1910B-orangepiaipro20t.dtb" \
+				"${src_dir}/../workspace/dtb/dtbs/hi1910B-orangepiaipro20t.dtb"; do
+				if [[ -f "${dtb_candidate}" ]]; then
+					dtb_found="$(realpath "${dtb_candidate}")"
+					break
+				fi
+			done
+			[[ -n "${dtb_found}" ]] || exit_with_error "Cannot find DTB in local build tree" "${src_dir}"
+			run_host_command_logged cp -f "${dtb_found}" "${stage_dir}/hi1910B-orangepiaipro20t.dtb"
 		fi
-		if grep -q 'systemd\\.unified_cgroup_hierarchy=0' \"\${dts_file}\"; then
-			exit 1
+
+		# Copy deb packages
+		for f in "${src_dir}"/linux-modules-*.deb "${src_dir}"/linux-headers-*.deb; do
+			[[ -f "${f}" ]] && run_host_command_logged cp -f "${f}" "${stage_dir}/$(basename "${f}")"
+		done
+
+		# Tell the in-container build to use the staged dir
+		declare -g OPIAI_KERNEL_VERSION="local"
+		unset OPIAI_LOCAL_OUTPUT_DIR
+	fi
+}
+
+function opiai__release_download_dir() {
+	if [[ -n "${OPIAI_LOCAL_OUTPUT_DIR:-}" ]]; then
+		echo "$(realpath -m "${OPIAI_LOCAL_OUTPUT_DIR}")"
+		return 0
+	fi
+	echo "$(opiai__cache_root)/releases/$(opiai__kernel_version)"
+}
+
+function opiai__resolve_release_tag() {
+	local version
+	version="$(opiai__kernel_version)"
+
+	if [[ "${version}" == "latest" ]]; then
+		local api_url
+		api_url="$(opiai__releases_api_url)/latest"
+		display_alert "Resolving latest Orange Pi AI Pro 20T kernel release" "${api_url}" "info"
+		version="$(curl -fsSL "${api_url}" | jq -r '.tag_name')"
+		[[ -n "${version}" && "${version}" != "null" ]] || exit_with_error "Unable to resolve latest kernel release tag" "${api_url}"
+		display_alert "Resolved Orange Pi AI Pro 20T kernel release" "${version}" "info"
+	fi
+
+	echo "${version}"
+}
+
+function opiai__download_artifact() {
+	local url="${1}"
+	local dest="${2}"
+
+	if [[ -f "${dest}" ]]; then
+		display_alert "Cached" "$(basename "${dest}")" "info"
+		return 0
+	fi
+
+	display_alert "Downloading" "$(basename "${dest}")" "info"
+	run_host_command_logged curl -fSL --retry 3 --retry-delay 5 -o "${dest}.tmp" "${url}"
+	run_host_command_logged mv "${dest}.tmp" "${dest}"
+}
+
+function opiai__download_release_artifacts() {
+	local tag
+	local download_dir
+	local base_url
+
+	download_dir="$(opiai__release_download_dir)"
+
+	if [[ -n "${OPIAI_LOCAL_OUTPUT_DIR:-}" ]]; then
+		display_alert "Using local kernel artifacts" "${download_dir}" "info"
+		opiai__require_file "${download_dir}/Image"
+		opiai__require_file "${download_dir}/dt.img"
+
+		# In the local build tree the DTB lives under ../workspace/dtb/dtbs/
+		if [[ ! -f "${download_dir}/hi1910B-orangepiaipro20t.dtb" ]]; then
+			local local_base
+			local_base="$(dirname "${download_dir}")"
+			local dtb_candidates=(
+				"${local_base}/workspace/dtb/dtbs/hi1910B-orangepiaipro20t.dtb"
+				"${download_dir}/../workspace/dtb/dtbs/hi1910B-orangepiaipro20t.dtb"
+			)
+			local found_dtb=""
+			for c in "${dtb_candidates[@]}"; do
+				if [[ -f "${c}" ]]; then
+					found_dtb="$(realpath "${c}")"
+					break
+				fi
+			done
+			[[ -n "${found_dtb}" ]] || exit_with_error "Cannot find DTB for local build" "${download_dir}"
+			run_host_command_logged cp -f "${found_dtb}" "${download_dir}/hi1910B-orangepiaipro20t.dtb"
 		fi
-	"
-}
-
-function opiai__vendor_build_dir() {
-	echo "${OPIAI_VENDOR_BUILD_DIR_OVERRIDE:-$(opiai__cache_root)/build/${BRANCH}/$(opiai__vendor_toolchain_label)}"
-}
-
-function opiai__vendor_package_version() {
-	if [[ -n "${OPIAI_PACKAGE_VERSION:-}" ]]; then
-		echo "${OPIAI_PACKAGE_VERSION}"
 		return 0
 	fi
 
-	date '+%Y%m%d%H%M'
+	tag="$(opiai__resolve_release_tag)"
+	base_url="$(opiai__releases_download_url)/${tag}"
+
+	run_host_command_logged mkdir -p "${download_dir}"
+
+	opiai__download_artifact "${base_url}/Image" "${download_dir}/Image"
+	opiai__download_artifact "${base_url}/dt.img" "${download_dir}/dt.img"
+	opiai__download_artifact "${base_url}/hi1910B-orangepiaipro20t.dtb" "${download_dir}/hi1910B-orangepiaipro20t.dtb"
+
+	local modules_deb
+	modules_deb="$(opiai__find_release_deb "${tag}" "linux-modules-" "${download_dir}")"
+	[[ -n "${modules_deb}" ]] || exit_with_error "Unable to find modules deb in release" "${tag}"
+
+	if [[ "${INSTALL_HEADERS:-no}" == "yes" ]]; then
+		local headers_deb
+		headers_deb="$(opiai__find_release_deb "${tag}" "linux-headers-" "${download_dir}")"
+		[[ -n "${headers_deb}" ]] || exit_with_error "Unable to find headers deb in release" "${tag}"
+	fi
 }
 
-function opiai__vendor_jobs_count() {
-	local jobs="${CTHREADS:-}"
+function opiai__find_release_deb() {
+	local tag="${1}"
+	local prefix="${2}"
+	local download_dir="${3}"
+	local cached_deb
+	local api_url
+	local asset_name
+	local asset_url
 
-	if [[ "${jobs}" =~ ^-j([0-9]+)$ ]]; then
-		echo "${BASH_REMATCH[1]}"
+	cached_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "${prefix}*.deb" 2>/dev/null | sort | head -n 1)"
+	if [[ -n "${cached_deb}" ]]; then
+		echo "${cached_deb}"
 		return 0
 	fi
 
-	if [[ "${jobs}" =~ ^[0-9]+$ ]]; then
-		echo "${jobs}"
-		return 0
-	fi
+	api_url="$(opiai__releases_api_url)/tags/${tag}"
+	asset_name="$(curl -fsSL "${api_url}" | jq -r --arg prefix "${prefix}" '.assets[] | select(.name | startswith($prefix)) | select(.name | endswith(".deb")) | .name' | sort | head -n 1)"
+	[[ -n "${asset_name}" && "${asset_name}" != "null" ]] || return 1
 
-	nproc
-}
-
-function opiai__find_prefixed_tool() {
-	local tool_name="${1}"
-	local candidate="aarch64-linux-gnu-${tool_name}"
-
-	if command -v "${candidate}" >/dev/null 2>&1; then
-		command -v "${candidate}"
-		return 0
-	fi
-
-	return 1
-}
-
-function opiai__find_versioned_prefixed_tool() {
-	local tool_name="${1}"
-	local gcc_major
-	local candidate
-
-	gcc_major="$(opiai__vendor_gcc_major)"
-	if [[ -z "${gcc_major}" ]]; then
-		opiai__find_prefixed_tool "${tool_name}"
-		return 0
-	fi
-
-	candidate="aarch64-linux-gnu-${tool_name}-${gcc_major}"
-	if command -v "${candidate}" >/dev/null 2>&1; then
-		command -v "${candidate}"
-		return 0
-	fi
-
-	return 1
-}
-
-function opiai__find_best_prefixed_tool() {
-	local tool_name="${1}"
-
-	if opiai__find_versioned_prefixed_tool "${tool_name}" >/dev/null 2>&1; then
-		opiai__find_versioned_prefixed_tool "${tool_name}"
-		return 0
-	fi
-
-	opiai__find_prefixed_tool "${tool_name}"
-}
-
-function opiai__prepare_vendor_cross_toolchain() {
-	local build_dir="${1}"
-	local shim_dir="${build_dir}/toolchain/bin"
-	local tool_name
-	local tool_path
-	local gcc_path
-	local gcc_major_suffix=""
-
-	if [[ -n "$(opiai__vendor_gcc_major)" ]]; then
-		gcc_major_suffix="-$(opiai__vendor_gcc_major)"
-	fi
-
-	run_host_command_logged mkdir -p "${shim_dir}"
-
-	for tool_name in gcc cpp g++; do
-		tool_path="$(opiai__find_versioned_prefixed_tool "${tool_name}")" || \
-			exit_with_error "Missing requested Orange Pi AI Pro 20T cross compiler frontend" "aarch64-linux-gnu-${tool_name}${gcc_major_suffix}"
-		run_host_command_logged ln -snf "${tool_path}" "${shim_dir}/aarch64-linux-gnu-${tool_name}"
-	done
-
-	for tool_name in ar as ld nm objcopy objdump ranlib readelf strip gcc-ar gcc-nm gcc-ranlib; do
-		if tool_path="$(opiai__find_best_prefixed_tool "${tool_name}")"; then
-			run_host_command_logged ln -snf "${tool_path}" "${shim_dir}/aarch64-linux-gnu-${tool_name}"
-		fi
-	done
-
-	gcc_path="$(readlink -f "${shim_dir}/aarch64-linux-gnu-gcc")"
-	display_alert "Orange Pi AI Pro 20T vendor cross compiler" "${gcc_path}" "info"
-	declare -g OPIAI_VENDOR_CROSS_COMPILE_PREFIX="${shim_dir}/aarch64-linux-gnu-"
-}
-
-function opiai__ensure_driver_modules_autoload_conf() {
-	local output_dir="${1}"
-	local driver_modules_dir="${output_dir}/driver_modules"
-	local autoload_conf="${output_dir}/ascend310b-driver-modules.conf"
-	local driver_modules_dir_quoted
-	local autoload_conf_quoted
-
-	[[ -f "${autoload_conf}" ]] && return 0
-	[[ -d "${driver_modules_dir}" ]] || return 0
-	printf -v driver_modules_dir_quoted '%q' "${driver_modules_dir}"
-	printf -v autoload_conf_quoted '%q' "${autoload_conf}"
-
-	run_host_command_logged "
-		driver_modules_dir=${driver_modules_dir_quoted}
-		autoload_conf=${autoload_conf_quoted}
-		mapfile -t module_names < <(find \"\${driver_modules_dir}\" -maxdepth 1 -type f -name '*.ko' -printf '%f\n' | sed 's/\\.ko\$//' | sort -u)
-		[[ \${#module_names[@]} -gt 0 ]] || exit 0
-		printf '%s\n' \"\${module_names[@]}\" > \"\${autoload_conf}\"
-	"
-}
-
-function opiai__compress_module_tree() {
-	local modules_dir="${1}"
-	local strip_bin="${2:-}"
-	local shell_script
-	local modules_dir_quoted
-	local strip_bin_quoted
-
-	[[ -d "${modules_dir}" ]] || return 0
-	printf -v modules_dir_quoted '%q' "${modules_dir}"
-	printf -v strip_bin_quoted '%q' "${strip_bin}"
-
-	shell_script="modules_dir=${modules_dir_quoted}; strip_bin=${strip_bin_quoted}; mapfile -d '' -t module_paths < <(find \"\${modules_dir}\" -type f -name '*.ko' -print0); [[ \${#module_paths[@]} -gt 0 ]] || exit 0; for module_path in \"\${module_paths[@]}\"; do if [[ -n \"\${strip_bin}\" && -x \"\${strip_bin}\" ]]; then \"\${strip_bin}\" --strip-debug \"\${module_path}\"; fi; xz --check=crc32 --lzma2=dict=1MiB -f \"\${module_path}\"; done"
-	run_host_command_logged "${shell_script}"
-}
-
-function opiai__postprocess_vendor_modules() {
-	local output_dir="${1}"
-	local kernel_release="${2}"
-	local kernel_modules_dir="${output_dir}/modules/lib/modules/${kernel_release}"
-	local driver_modules_dir="${output_dir}/driver_modules"
-	local strip_bin="${OPIAI_VENDOR_CROSS_COMPILE_PREFIX}strip"
-
-	opiai__ensure_driver_modules_autoload_conf "${output_dir}"
-	opiai__compress_module_tree "${kernel_modules_dir}" ""
-	opiai__compress_module_tree "${driver_modules_dir}" "${strip_bin}"
+	asset_url="$(opiai__releases_download_url)/${tag}/${asset_name}"
+	opiai__download_artifact "${asset_url}" "${download_dir}/${asset_name}"
+	echo "${download_dir}/${asset_name}"
 }
 
 function opiai__find_qemu_binary() {
@@ -440,15 +322,8 @@ function opiai__create_qemu_sysroot() {
 	run_host_command_logged ln -snf "${libdir}" "${sysroot_dir}/usr/lib"
 }
 
-function opiai__prepare_vendor_worktree() {
-	opiai__prepare_vendor_source_tree
-}
-
 function opiai__load_vendor_kernel_artifacts() {
-	local sdk_root
-	local build_dir
-	local output_dir
-	local workspace_dir
+	local download_dir
 	local kernel_release
 	local modules_deb
 	local headers_deb=""
@@ -456,44 +331,37 @@ function opiai__load_vendor_kernel_artifacts() {
 	local image_deb
 
 	opiai__stage_vendor_assets
-	sdk_root="$(opiai__vendor_source_dir)"
-	build_dir="$(opiai__vendor_build_dir)"
-	output_dir="${build_dir}/output"
-	workspace_dir="${build_dir}/workspace"
+	download_dir="$(opiai__release_download_dir)"
 
-	[[ -d "${output_dir}" ]] || return 1
-	[[ -d "${workspace_dir}" ]] || return 1
+	[[ -d "${download_dir}" ]] || return 1
+	[[ -f "${download_dir}/Image" ]] || return 1
+	[[ -f "${download_dir}/dt.img" ]] || return 1
 
-	kernel_release="$(find "${output_dir}/modules/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | head -n 1)"
-	[[ -n "${kernel_release}" ]] || return 1
+	dtb_file="${download_dir}/hi1910B-orangepiaipro20t.dtb"
+	[[ -f "${dtb_file}" ]] || return 1
 
-	modules_deb="$(find "${output_dir}" -maxdepth 1 -type f -name "linux-modules-${kernel_release}_*.deb" | sort | head -n 1)"
+	modules_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "linux-modules-*.deb" | sort | head -n 1)"
 	[[ -n "${modules_deb}" && -f "${modules_deb}" ]] || return 1
 
+	kernel_release="$(basename "${modules_deb}" | sed -E 's/^linux-modules-([^_]+)_.*/\1/')"
+	[[ -n "${kernel_release}" ]] || return 1
+
 	if [[ "${INSTALL_HEADERS:-no}" == "yes" ]]; then
-		headers_deb="$(find "${output_dir}" -maxdepth 1 -type f -name "linux-headers-${kernel_release}_*.deb" | sort | head -n 1)"
+		headers_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "linux-headers-*.deb" | sort | head -n 1)"
 		[[ -n "${headers_deb}" && -f "${headers_deb}" ]] || return 1
 	fi
 
-	dtb_file="${workspace_dir}/dtb/dtbs/hi1910B-orangepiaipro20t.dtb"
-	[[ -f "${dtb_file}" ]] || return 1
-	[[ -f "${output_dir}/Image" ]] || return 1
-	[[ -f "${output_dir}/dt.img" ]] || return 1
-
-	image_deb="$(find "${output_dir}" -maxdepth 1 -type f -name "linux-image-${BRANCH}-${LINUXFAMILY}_*.deb" | sort | head -n 1)"
+	image_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "linux-image-*.deb" | sort | head -n 1)"
 	[[ -n "${image_deb}" && -f "${image_deb}" ]] || return 1
-	[[ -f "${sdk_root}/linux-source/arch/arm64/configs/ascend310B_defconfig" ]] || return 1
 	[[ -f "$(opiai__itrustee_image)" ]] || return 1
 
-	declare -g OPIAI_VENDOR_WORKTREE_DIR="${sdk_root}"
-	declare -g OPIAI_VENDOR_BUILD_DIR="${build_dir}"
-	declare -g OPIAI_VENDOR_OUTPUT_DIR="${output_dir}"
+	declare -g OPIAI_VENDOR_OUTPUT_DIR="${download_dir}"
 	declare -g OPIAI_KERNEL_RELEASE="${kernel_release}"
 	declare -g OPIAI_MODULES_DEB="${modules_deb}"
 	declare -g OPIAI_HEADERS_DEB="${headers_deb}"
 	declare -g OPIAI_IMAGE_DEB="${image_deb}"
-	declare -g OPIAI_IMAGE_FILE="${output_dir}/Image"
-	declare -g OPIAI_DT_IMAGE_FILE="${output_dir}/dt.img"
+	declare -g OPIAI_IMAGE_FILE="${download_dir}/Image"
+	declare -g OPIAI_DT_IMAGE_FILE="${download_dir}/dt.img"
 	declare -g OPIAI_DTB_FILE="${dtb_file}"
 	declare -g OPIAI_ITRUSTEE_FILE="$(opiai__itrustee_image)"
 	declare -g OPIAI_ARTIFACTS_READY="yes"
@@ -501,130 +369,84 @@ function opiai__load_vendor_kernel_artifacts() {
 }
 
 function opiai__build_vendor_kernel_artifacts() {
-	local sdk_root
-	local worktree_dir
-	local build_dir
-	local output_dir
-	local workspace_dir
-	local kernel_release
-	local modules_deb
-	local headers_deb=""
-	local dtb_file
-	local image_deb
-	local package_version
-	local -a vendor_make_args
-
 	if opiai__load_vendor_kernel_artifacts; then
-		display_alert "Reusing Orange Pi AI Pro 20T vendor kernel artifacts" "$(opiai__vendor_build_dir)" "info"
+		display_alert "Reusing cached Orange Pi AI Pro 20T kernel artifacts" "$(opiai__release_download_dir)" "info"
 		return 0
 	fi
 
 	if [[ "${OPIAI_ARTIFACTS_READY:-no}" == "yes" ]]; then
-		exit_with_error "Requested prebuilt Orange Pi AI Pro 20T vendor artifacts but cache is incomplete" "$(opiai__vendor_build_dir)"
+		exit_with_error "Orange Pi AI Pro 20T kernel artifacts cache is incomplete" "$(opiai__release_download_dir)"
 	fi
 
 	opiai__stage_vendor_assets
-	sdk_root="$(opiai__vendor_source_dir)"
-	opiai__prepare_vendor_worktree
-	opiai__patch_vendor_source_tree
-	worktree_dir="${OPIAI_PREPARED_VENDOR_SOURCE_DIR}"
-	build_dir="$(opiai__vendor_build_dir)"
-	output_dir="${build_dir}/output"
-	workspace_dir="${build_dir}/workspace"
+	opiai__download_release_artifacts
 
-	opiai__require_file "$(opiai__itrustee_image)"
-	opiai__require_file "${sdk_root}/linux-source/arch/arm64/configs/ascend310B_defconfig"
-	opiai__require_file "${sdk_root}/linux-source/certs/ELF_Common_RSA4096_CN_20191009_Huawei.pem"
+	local download_dir
+	local kernel_release
+	local modules_deb
+	local headers_deb=""
+	local dtb_file
+	local package_version
 
-	run_host_command_logged mkdir -p "${build_dir}"
-	run_host_command_logged rm -rf "${output_dir}" "${workspace_dir}"
-	opiai__prepare_vendor_cross_toolchain "${build_dir}"
-		vendor_make_args=(
-			-C "${worktree_dir}"
-			OUTPUT_DIR="${output_dir}"
-			WORKSPACE_DIR="${workspace_dir}"
-			CROSS_COMPILE_PREFIX="${OPIAI_VENDOR_CROSS_COMPILE_PREFIX}"
-			JOBS="$(opiai__vendor_jobs_count)"
-			SKIP_MENUCONFIG=1
-			INSTALL_MOD_STRIP=1
-			CONFIG_MODULE_COMPRESS=y
-			CONFIG_MODULE_COMPRESS_XZ=y
-			CONFIG_MODULE_COMPRESS_ALL=y
-		)
+	download_dir="$(opiai__release_download_dir)"
 
-		display_alert "Building Orange Pi AI Pro 20T vendor kernel artifacts" "${BRANCH} -> $(opiai__branch_to_vendor_ref)" "info"
+	modules_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "linux-modules-*.deb" | sort | head -n 1)"
+	[[ -n "${modules_deb}" ]] || exit_with_error "Unable to locate downloaded modules deb" "${download_dir}"
 
-		run_host_command_logged make "${vendor_make_args[@]}" kernel dtb driver
-
-		kernel_release="$(find "${output_dir}/modules/lib/modules" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort)"
-		[[ -n "${kernel_release}" ]] || exit_with_error "Unable to determine built kernel release" "${output_dir}/modules/lib/modules"
-
-		opiai__postprocess_vendor_modules "${output_dir}" "${kernel_release}"
-
-		run_host_command_logged make "${vendor_make_args[@]}" modules-deb
-
-		if [[ "${INSTALL_HEADERS:-no}" == "yes" ]]; then
-			run_host_command_logged make "${vendor_make_args[@]}" headers-deb
-		fi
-
-		modules_deb="$(find "${output_dir}" -maxdepth 1 -type f -name "linux-modules-${kernel_release}_*.deb" | sort | head -n 1)"
-		[[ -n "${modules_deb}" ]] || exit_with_error "Unable to locate vendor modules deb" "${output_dir}"
+	kernel_release="$(basename "${modules_deb}" | sed -E 's/^linux-modules-([^_]+)_.*/\1/')"
+	[[ -n "${kernel_release}" ]] || exit_with_error "Unable to determine kernel release from modules deb" "${modules_deb}"
 
 	if [[ "${INSTALL_HEADERS:-no}" == "yes" ]]; then
-		headers_deb="$(find "${output_dir}" -maxdepth 1 -type f -name "linux-headers-${kernel_release}_*.deb" | sort | head -n 1)"
-		[[ -n "${headers_deb}" ]] || exit_with_error "Unable to locate vendor headers deb" "${output_dir}"
+		headers_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "linux-headers-*.deb" | sort | head -n 1)"
+		[[ -n "${headers_deb}" ]] || exit_with_error "Unable to locate downloaded headers deb" "${download_dir}"
 	fi
 
-	dtb_file="${workspace_dir}/dtb/dtbs/hi1910B-orangepiaipro20t.dtb"
+	dtb_file="${download_dir}/hi1910B-orangepiaipro20t.dtb"
 	opiai__require_file "${dtb_file}"
-	opiai__require_file "${output_dir}/Image"
-	opiai__require_file "${output_dir}/dt.img"
+	opiai__require_file "${download_dir}/Image"
+	opiai__require_file "${download_dir}/dt.img"
 
-	package_version="$(opiai__vendor_package_version)"
-	image_deb="${output_dir}/linux-image-${BRANCH}-${LINUXFAMILY}_${package_version}_arm64.deb"
+	if [[ -n "${OPIAI_LOCAL_OUTPUT_DIR:-}" ]]; then
+		# Derive version from modules deb filename instead of querying GitHub API
+		package_version="$(basename "${modules_deb}" | sed -E 's/^linux-modules-[^_]+_([^_]+)_.*/\1/')"
+	else
+		package_version="$(opiai__resolve_release_tag)"
+	fi
+	local image_deb="${download_dir}/linux-image-${BRANCH}-${LINUXFAMILY}_${package_version}_arm64.deb"
 
-	opiai__build_vendor_image_deb "${worktree_dir}" "${output_dir}" "${kernel_release}" "${dtb_file}" "${image_deb}" "${package_version}"
+	opiai__build_vendor_image_deb "${download_dir}" "${kernel_release}" "${dtb_file}" "${image_deb}" "${package_version}"
 
-	declare -g OPIAI_VENDOR_WORKTREE_DIR="${worktree_dir}"
-	declare -g OPIAI_VENDOR_BUILD_DIR="${build_dir}"
-	declare -g OPIAI_VENDOR_OUTPUT_DIR="${output_dir}"
+	declare -g OPIAI_VENDOR_OUTPUT_DIR="${download_dir}"
 	declare -g OPIAI_KERNEL_RELEASE="${kernel_release}"
 	declare -g OPIAI_MODULES_DEB="${modules_deb}"
 	declare -g OPIAI_HEADERS_DEB="${headers_deb}"
 	declare -g OPIAI_IMAGE_DEB="${image_deb}"
-	declare -g OPIAI_IMAGE_FILE="${output_dir}/Image"
-	declare -g OPIAI_DT_IMAGE_FILE="${output_dir}/dt.img"
+	declare -g OPIAI_IMAGE_FILE="${download_dir}/Image"
+	declare -g OPIAI_DT_IMAGE_FILE="${download_dir}/dt.img"
 	declare -g OPIAI_DTB_FILE="${dtb_file}"
 	declare -g OPIAI_ITRUSTEE_FILE="$(opiai__itrustee_image)"
 	declare -g OPIAI_ARTIFACTS_READY="yes"
 }
 
 function opiai__build_vendor_image_deb() {
-	local worktree_dir="${1}"
-	local output_dir="${2}"
-	local kernel_release="${3}"
-	local dtb_file="${4}"
-	local image_deb="${5}"
-	local package_version="${6}"
+	local download_dir="${1}"
+	local kernel_release="${2}"
+	local dtb_file="${3}"
+	local image_deb="${4}"
+	local package_version="${5}"
 	local package_name="linux-image-${BRANCH}-${LINUXFAMILY}"
-	local package_root="${output_dir}/image-deb/pkgroot"
+	local package_root="${download_dir}/image-deb/pkgroot"
 	local image_dir="/usr/lib/linux-image-${kernel_release}"
 	local debian_dir="${package_root}/DEBIAN"
 
-	run_host_command_logged rm -rf "${output_dir}/image-deb"
+	run_host_command_logged rm -rf "${download_dir}/image-deb"
 	run_host_command_logged mkdir -p "${debian_dir}" \
 		"${package_root}/boot/dtb/hi1910b" \
 		"${package_root}${image_dir}/hi1910b"
 
-	run_host_command_logged install -m 0644 "${output_dir}/Image" "${package_root}/boot/Image-${kernel_release}"
+	run_host_command_logged install -m 0644 "${download_dir}/Image" "${package_root}/boot/Image-${kernel_release}"
 	run_host_command_logged install -m 0644 "${dtb_file}" "${package_root}/boot/dtb/hi1910b/hi1910B-orangepiaipro20t.dtb"
 	run_host_command_logged install -m 0644 "${dtb_file}" "${package_root}${image_dir}/hi1910b/hi1910B-orangepiaipro20t.dtb"
-
-	if [[ -f "${worktree_dir}/linux-source/System.map" ]]; then
-		run_host_command_logged install -m 0644 "${worktree_dir}/linux-source/System.map" "${package_root}/boot/System.map-${kernel_release}"
-	fi
-
-	run_host_command_logged install -m 0644 "${worktree_dir}/linux-source/.config" "${package_root}/boot/config-${kernel_release}"
 
 	cat > "${debian_dir}/control" <<- EOF
 		Package: ${package_name}
