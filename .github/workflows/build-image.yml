@@ -58,6 +58,8 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJson(needs.matrix.outputs.include) }}
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -82,18 +84,44 @@ jobs:
             COMPRESS_OUTPUTIMAGE=xz \
             EXPERT=yes
 
-      - name: Collect output
+      - name: Collect and rename artifacts
         id: output
         run: |
-          mkdir -p release-images
-          cp output/images/*.img.xz release-images/ 2>/dev/null || true
-          cp output/images/*.img.xz.sha release-images/ 2>/dev/null || true
-          ls -lh release-images/
-          echo "dir=release-images" >> "$GITHUB_OUTPUT"
+          # Determine distro name for release title
+          case "${{ matrix.release }}" in
+            trixie|bookworm) distro="Debian" ;;
+            noble)           distro="Ubuntu" ;;
+            *)               distro="${{ matrix.release }}" ;;
+          esac
+          variant="${{ matrix.variant }}"
+          release="${{ matrix.release }}"
+          kver="${{ inputs.kernel_version }}"
 
-      - name: Upload image artifact
-        uses: actions/upload-artifact@v4
+          release_tag="${distro}-${release}-${variant}"
+          release_name="Armbian ${distro} ${release^} ${variant}"
+
+          mkdir -p release-assets
+          for f in output/images/*.img.xz; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f" .img.xz)"
+            cp "$f" "release-assets/${base}_${kver}.img.xz"
+          done
+          for f in output/images/*.img.xz.sha; do
+            [ -f "$f" ] || continue
+            base="$(basename "$f" .img.xz.sha)"
+            cp "$f" "release-assets/${base}_${kver}.img.xz.sha"
+          done
+
+          ls -lh release-assets/
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: orangepiaipro20t-${{ matrix.variant }}-${{ matrix.release }}
-          path: ${{ steps.output.outputs.dir }}/
-          retention-days: 14
+          tag_name: ${{ steps.output.outputs.release_tag }}
+          name: ${{ steps.output.outputs.release_name }}
+          files: release-assets/*
+          make_latest: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
