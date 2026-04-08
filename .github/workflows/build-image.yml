@@ -76,6 +76,7 @@ jobs:
             BRANCH=current \
             RELEASE=${{ matrix.release }} \
             BUILD_MINIMAL=${{ matrix.build_minimal }} \
+            BUILD_DESKTOP=no \
             INSTALL_HEADERS=${{ matrix.install_headers }} \
             KERNEL_CONFIGURE=no \
             COMPRESS_OUTPUTIMAGE=xz \
