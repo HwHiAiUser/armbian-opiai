@@ -64,6 +64,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Set up QEMU for cross-arch builds
+        uses: docker/setup-qemu-action@v3
+
       - name: Build image
         env:
           OPIAI_KERNEL_VERSION: ${{ inputs.kernel_version }}
