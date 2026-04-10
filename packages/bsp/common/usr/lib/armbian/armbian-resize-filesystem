@@ -27,8 +27,18 @@ do_expand_partition()
 	# due to the bug in util-linux 2.34 which fails to show device, let's use this failover:
 	[[ -z $diskdevname ]] && diskdevname=$(echo $partdev | sed -e "s/^\/dev\///" | sed "s/p.*//")
 	local diskdev="/dev/$diskdevname" # i.e. /dev/mmcblk0, /dev/sda
+	local pttype=$(lsblk -n -d -o PTTYPE $diskdev 2>/dev/null)
+	local original_partuuid=""
 	echo "diskdevname: $diskdevname"
 	echo "diskdev: $diskdev"
+	echo "pttype: ${pttype:-unknown}"
+
+	# GPT rootfs is often referenced by PARTUUID in the boot args. Preserve it
+	# across delete/recreate so first-boot expansion does not break boot.
+	if [[ "$pttype" == "gpt" ]]; then
+		original_partuuid=$(lsblk -n -o PARTUUID $partdev 2>/dev/null | head -n1)
+		echo "original PARTUUID: ${original_partuuid:-unknown}"
+	fi
 
 	# detect partindex
 	local partindex="$(echo $partdev | sed "s|^$diskdev||" | sed 's/^p//')" # i.e. 1
@@ -156,6 +166,14 @@ do_expand_partition()
 			echo n; echo p; echo ; echo $(( $lastsector + 1 )); echo $newpartition
 			echo w
 		} | fdisk $diskdev
+	fi
+
+	if [[ "$pttype" == "gpt" ]] && [[ -n "$original_partuuid" ]]; then
+		echo -e "\nRestoring GPT PARTUUID ${original_partuuid} on ${partdev}"
+		if ! sfdisk --part-uuid $diskdev $partindex $original_partuuid; then
+			echo -e "\nFailed to restore GPT PARTUUID ${original_partuuid}" >&2
+			return 1
+		fi
 	fi
 
 	echo -e "\nExecuting partprobe:"
