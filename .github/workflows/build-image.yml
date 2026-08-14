@@ -1,4 +1,4 @@
-name: "Build Orange Pi AI Pro 20T images"
+name: "Build Orange Pi AI Pro images"
 
 on:
   workflow_dispatch:
@@ -39,20 +39,37 @@ jobs:
           release="${{ inputs.release }}"
           json="["
           first=true
-          for v in ${variants//,/ }; do
-            if [ "$first" = true ]; then first=false; else json+=","; fi
-            if [ "$v" = "minimal" ]; then
-              json+="{\"variant\":\"minimal\",\"build_minimal\":\"yes\",\"install_headers\":\"no\",\"release\":\"${release}\"}"
-            else
-              json+="{\"variant\":\"default\",\"build_minimal\":\"no\",\"install_headers\":\"yes\",\"release\":\"${release}\"}"
-            fi
+          for board in orangepiaipro20t orangepiaipro8t; do
+            if [ "$board" = "orangepiaipro20t" ]; then model="20T"; else model="8T"; fi
+            for v in ${variants//,/ }; do
+              if [ "$first" = true ]; then first=false; else json+=","; fi
+              if [ "$v" = "minimal" ]; then
+                json+="{\"board\":\"${board}\",\"model\":\"${model}\",\"variant\":\"minimal\",\"build_minimal\":\"yes\",\"install_headers\":\"no\",\"release\":\"${release}\"}"
+              else
+                json+="{\"board\":\"${board}\",\"model\":\"${model}\",\"variant\":\"default\",\"build_minimal\":\"no\",\"install_headers\":\"yes\",\"release\":\"${release}\"}"
+              fi
+            done
           done
           json+="]"
           echo "include=${json}" >> "$GITHUB_OUTPUT"
 
+  boot-tests:
+    name: Test Orange Pi AI Pro boot integration
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run focused boot tests
+        run: bash tools/test-opiai-uboot-extension.sh
+
   build:
-    needs: matrix
-    name: "Build ${{ matrix.variant }} (${{ matrix.release }})"
+    needs:
+      - matrix
+      - boot-tests
+    name: "Build ${{ matrix.model }} ${{ matrix.variant }} (${{ matrix.release }})"
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -74,7 +91,7 @@ jobs:
           OPIAI_KERNEL_VERSION: ${{ inputs.kernel_version }}
         run: |
           ./compile.sh build \
-            BOARD=orangepiaipro20t \
+            BOARD=${{ matrix.board }} \
             BRANCH=current \
             RELEASE=${{ matrix.release }} \
             BUILD_MINIMAL=${{ matrix.build_minimal }} \
@@ -94,11 +111,13 @@ jobs:
             *)               distro="${{ matrix.release }}" ;;
           esac
           variant="${{ matrix.variant }}"
+          board="${{ matrix.board }}"
+          model="${{ matrix.model }}"
           release="${{ matrix.release }}"
           kver="${{ inputs.kernel_version }}"
 
-          release_tag="${distro}-${release}-${variant}"
-          release_name="Armbian ${distro} ${release^} ${variant}"
+          release_tag="${board}-${distro}-${release}-${variant}"
+          release_name="Armbian Orange Pi AI Pro ${model} ${distro} ${release^} ${variant}"
 
           mkdir -p release-assets
           for f in output/images/*.img.xz; do
