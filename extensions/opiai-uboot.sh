@@ -92,7 +92,7 @@ function opiai__find_release_deb() {
 	local tag="${1}"
 	local prefix="${2}"
 	local download_dir="${3}"
-	local cached_deb api_url asset_name asset_url
+	local cached_deb api_url asset_name asset_url destination
 
 	cached_deb="$(find "${download_dir}" -maxdepth 1 -type f -name "${prefix}*.deb" 2>/dev/null | sort | head -n 1)"
 	if [[ -n "${cached_deb}" ]]; then
@@ -106,8 +106,12 @@ function opiai__find_release_deb() {
 	[[ -n "${asset_name}" && "${asset_name}" != "null" ]] || return 1
 
 	asset_url="$(opiai__releases_download_url)/${tag}/${asset_name}"
-	opiai__download_artifact "${asset_url}" "${download_dir}/${asset_name}"
-	echo "${download_dir}/${asset_name}"
+	destination="${download_dir}/${asset_name}"
+	# This function is called through command substitution. Keep downloader and
+	# logger output away from stdout so the caller receives only the file path.
+	opiai__download_artifact "${asset_url}" "${destination}" >&2 || return 1
+	[[ -f "${destination}" ]] || return 1
+	printf '%s\n' "${destination}"
 }
 
 function opiai__arm64_image_magic() {

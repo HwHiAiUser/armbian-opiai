@@ -126,6 +126,46 @@ test_latest_release_uses_resolved_cache_directory() {
 	unset -f curl jq
 }
 
+test_release_deb_lookup_returns_only_the_path() (
+	local temporary_dir expected_asset_name expected_path actual_path
+	temporary_dir="$(mktemp -d)"
+	trap 'rm -rf "${temporary_dir}"' EXIT
+	expected_asset_name="linux-modules-6.18.44-opiai_6.18.44_arm64.deb"
+	expected_path="${temporary_dir}/${expected_asset_name}"
+
+	curl() { printf '{}\n'; }
+	jq() { printf '%s\n' "${expected_asset_name}"; }
+	opiai__download_artifact() {
+		local destination="${2}"
+		printf 'simulated curl progress\n'
+		mkdir -p "$(dirname "${destination}")"
+		: > "${destination}"
+	}
+
+	actual_path="$(opiai__find_release_deb "6.18.44" "linux-modules-" "${temporary_dir}" 2> "${temporary_dir}/download.log")"
+	assert_eq "${expected_path}" "${actual_path}" "release deb path"
+	assert_file_contains "${temporary_dir}/download.log" "simulated curl progress"
+)
+
+test_release_deb_download_failure_is_propagated() (
+	local temporary_dir expected_asset_name
+	temporary_dir="$(mktemp -d)"
+	trap 'rm -rf "${temporary_dir}"' EXIT
+	expected_asset_name="linux-modules-6.18.44-opiai_6.18.44_arm64.deb"
+
+	curl() { printf '{}\n'; }
+	jq() { printf '%s\n' "${expected_asset_name}"; }
+	opiai__download_artifact() {
+		printf 'simulated curl failure\n'
+		return 22
+	}
+
+	if opiai__find_release_deb "6.18.44" "linux-modules-" "${temporary_dir}" > /dev/null 2> "${temporary_dir}/download.log"; then
+		fail "release deb lookup ignored a download failure"
+	fi
+	assert_file_contains "${temporary_dir}/download.log" "simulated curl failure"
+)
+
 test_hboot2_region_limit() {
 	assert_eq "$((31 * 1024 * 1024))" "$(opiai__hboot2_region_max_bytes 32)" "hboot2 region size"
 }
@@ -195,6 +235,8 @@ run_tests() {
 		test_rejects_hboot2_wrapped_image
 		test_rejects_unknown_kernel_image
 		test_latest_release_uses_resolved_cache_directory
+		test_release_deb_lookup_returns_only_the_path
+		test_release_deb_download_failure_is_propagated
 		test_hboot2_region_limit
 		test_write_uboot_uses_one_mib_offset
 		test_new_boot_configuration_is_standard
