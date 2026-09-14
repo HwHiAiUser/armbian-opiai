@@ -199,6 +199,7 @@ test_new_boot_configuration_is_standard() {
 	assert_file_contains "${FAMILY_CONFIG}" 'BOOTSOURCE="https://github.com/HwHiAiUser/u-boot"'
 	assert_file_contains "${FAMILY_CONFIG}" 'BOOTBRANCH="branch:v2026.01-ascend310b"'
 	assert_file_contains "${FAMILY_CONFIG}" 'UBOOT_TARGET_MAP="all;;Image.hboot2 hboot2-uboot.raw"'
+	assert_file_contains "${FAMILY_CONFIG}" 'nvme_core.default_ps_max_latency_us=0 pcie_aspm=off pcie_port_pm=off'
 	# shellcheck disable=SC2016 # Verify this literal shell expression is present.
 	assert_file_contains "${OPIAI_EXTENSION}" '"${base_url}/Image.raw"'
 }
